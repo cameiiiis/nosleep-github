@@ -274,9 +274,30 @@ These are demo defaults, not detected hardware. Admins can edit them to match
 the café. Custom specs are preserved; original GPU/RAM-only default specs
 receive their CPU description on startup.
 
-Price = **rate per 30 minutes × number of blocks**. All public amounts use
+Regular price = **rate per 30 minutes × number of blocks**. All public amounts use
 **Philippine pesos (PHP)**. Enter `30.00` for ₱30.00 or `30.50` for ₱30.50.
 The backend calculates exact decimal amounts.
+
+All PCs receive **20% off daily from 1:00 AM until 6:00 AM Philippine time**.
+Only billed minutes inside that window receive the discount. A Standard
+session from 12:30 AM to 1:30 AM costs ₱54.00: ₱30.00 for the first half-hour
+and ₱24.00 for the discounted half-hour. A session starting at 6:00 AM uses
+regular pricing. Immediate walk-ins use minute precision for pricing;
+seconds still remain accurate in the actual play start. Final charges are
+rounded once to two decimal places.
+
+| Tier | Discounted 30 minutes | Discounted 60 minutes |
+| --- | --- | --- |
+| Standard | ₱24.00 | ₱48.00 |
+| Pro | ₱36.00 | ₱72.00 |
+| Elite | ₱48.00 | ₱96.00 |
+
+These totals assume the entire session is inside the discount window and
+the default tier rates. The preview shows the regular total, night discount,
+and final total. Online reservations, scheduled walk-ins, Start now, and
+extensions use the same server pricing rule. Each new item stores its price
+when held; existing items/payments are preserved. Receipts, refunds, and
+reports use the actual stored discounted amounts.
 
 ### Availability and holds
 
