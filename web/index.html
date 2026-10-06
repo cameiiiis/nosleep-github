@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="description" content="Reserve a gaming PC, settle your session with our cashier, and own the night at NO SLEEP.">
+  <title>NO SLEEP — Your seat. Your session. Your night.</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div id="app" aria-busy="true">
+    <header class="site-header"><div class="header-inner"><span class="wordmark">NO <span>SLEEP</span><i></i></span></div></header>
+    <main id="main" class="loading-screen"><span class="loader" aria-hidden="true"></span><p>Opening the café…</p></main>
+  </div>
+  <dialog id="confirmation-dialog" class="confirmation-dialog" aria-labelledby="confirmation-title" aria-describedby="confirmation-description">
+    <form method="dialog">
+      <h2 id="confirmation-title">Confirm action</h2>
+      <p id="confirmation-description"></p>
+      <div id="confirmation-total" class="confirmation-total" hidden><span id="confirmation-amount-label"></span><strong id="confirmation-amount"></strong></div>
+      <dl id="confirmation-details" class="confirmation-details"></dl>
+      <div class="confirmation-actions">
+        <button id="confirmation-cancel" class="btn btn-ghost" type="submit" value="cancel" autofocus>Cancel</button>
+        <button id="confirmation-approve" class="btn btn-primary" type="submit" value="confirm">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <div id="print-sheet" aria-hidden="true"></div>
+</body>
+</html>
