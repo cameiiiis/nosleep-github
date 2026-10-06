@@ -996,3 +996,5 @@ Current boundaries:
 For a teammate's local setup, install Go, open this project, run `go run .`,
 and open the printed browser address. Source and the starter are portable;
 local compiler caches are not needed for the handoff.
+#   n o s l e e p - g i t h u b  
+ 
