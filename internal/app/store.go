@@ -22,8 +22,9 @@ var (
 var schema embed.FS
 
 type Store struct {
-	db  *sql.DB
-	Now func() time.Time
+	db      *sql.DB
+	Now     func() time.Time
+	Backups *BackupManager
 }
 
 func OpenStore(path string) (*Store, error) {
@@ -53,6 +54,13 @@ func OpenStore(path string) (*Store, error) {
 	var hasPublicReason bool
 	if err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM pragma_table_info('maintenance') WHERE name='public_reason')").Scan(&hasPublicReason); err == nil && !hasPublicReason {
 		_, err = db.Exec("ALTER TABLE maintenance ADD COLUMN public_reason TEXT NOT NULL DEFAULT ''")
+	}
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = initAccountSchema(db); err == nil {
+		err = initCafeSchema(db)
 	}
 	if err != nil {
 		db.Close()

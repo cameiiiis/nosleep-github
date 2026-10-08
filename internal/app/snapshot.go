@@ -71,6 +71,14 @@ func (s *Store) Snapshot(actor User) (Snapshot, error) {
 		if e != nil {
 			return e
 		}
+		out.NightOffer, e = nightOfferTx(tx)
+		if e != nil {
+			return e
+		}
+		out.Reschedules, e = reschedulesTx(tx, bookingFilter, args)
+		if e != nil {
+			return e
+		}
 		out.WalkIns, e = collect(tx, "SELECT booking_id,guest_name FROM walk_ins WHERE booking_id IN ("+bookingFilter+") ORDER BY booking_id", func(row interface{ Scan(...any) error }) (WalkIn, error) {
 			var v WalkIn
 			e := row.Scan(&v.BookingID, &v.GuestName)

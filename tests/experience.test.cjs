@@ -110,7 +110,9 @@ async function harness(role = 'cashier', clockStart = Date.now()) {
   const filters = {elements:{}, closest(selector){return selector === '#booking-filters' ? this : null;}};
   const startInput = new Node();
   const focusControls=new Map();
-  app.querySelector = selector => focusControls.get(selector.slice(1))|| (selector === '#booking-filters' ? filters : selector === '#book-start' ? startInput : null);
+  let buttons=[];
+  app.querySelector = selector => focusControls.get(selector.slice(1))|| (selector === '#booking-filters' ? filters : selector === '#book-start' ? startInput : /^\[data-action="(.+)"\]$/.test(selector)?buttons.find(b=>b.dataset.action===/^\[data-action="(.+)"\]$/.exec(selector)[1])||null:null);
+  app.querySelectorAll=selector=>selector==='button'?buttons:selector.includes('form[data-form] button[type="submit"]')?buttons.filter(b=>b.type==='submit'||['hold','cancel','start','end','backup-create'].includes(b.dataset.action)||/^(refund-|reschedule-)/.test(b.dataset.action||'')):[];
   app.contains=node=>node?.ownedBy===app;
   const fields = new Map(['title', 'description', 'total', 'amount-label', 'amount', 'details', 'approve', 'cancel']
     .map(name => ['#confirmation-' + name, new Node()]));
@@ -154,11 +156,17 @@ async function harness(role = 'cashier', clockStart = Date.now()) {
     window:{addEventListener(){}, scrollTo(){}},
     localStorage:{getItem(){return null;}},
     crypto:{randomUUID:()=>'test-key'},
-    FormData: class { constructor(form){this.values=form.values;} get(name){return this.values[name];} },
+    FormData: class { constructor(form){this.values=form.values;} get(name){return this.values[name];} has(name){return Boolean(this.values[name]);} },
     setTimeout:()=>0, clearTimeout(){}, setInterval:()=>0,
     confirm(){nativePrompts++; return false;},
     fetch: async (url, options) => {
       if (options.method === 'POST') requests.push({url, body:JSON.parse(options.body)});
+      if(data.failFetch){data.failFetch=false;throw new TypeError('Failed to fetch');}
+      if(data.unreadablePost&&options.method==='POST'){data.unreadablePost=false;return {ok:true,json:async()=>{throw new SyntaxError('Bad JSON');}};}
+      if(url==='/api/state'&&data.stateError)return {ok:false,status:503,json:async()=>({error:'Database is temporarily unavailable'})};
+      if(url==='/api/shifts')return {ok:true,json:async()=>({shifts:data.shifts||[],current:data.currentShift||null})};
+      if(url==='/api/admin/password-requests')return {ok:true,json:async()=>({requests:data.passwordRequests||[]})};
+      if(url==='/api/admin/password-reset')return {ok:true,json:async()=>({reset_code:'a'.repeat(64),expires_at:new Date(currentTime+900000).toISOString()})};
       if(url==='/api/walk-ins/start-now'&&data.startNowError)return {ok:false,status:409,json:async()=>({error:'The rate changed. Review the updated amount.'})};
       if(url.startsWith('/api/reports')){reportRequests.push(url);if(data.reportError)return {ok:false,status:503,json:async()=>({error:'Report unavailable. Try again.'})};return {ok:true,json:async()=>({from:'2026-10-07',to:'2026-10-07',report:{payments_pesos:61.1,refunds_pesos:20.25,net_pesos:40.85},payments:data.payments,refunds:data.refunds.filter(r=>r.status==='completed')})};}
       if(url.startsWith('/api/payment-reference?')){
@@ -187,6 +195,7 @@ async function harness(role = 'cashier', clockStart = Date.now()) {
   Object.defineProperty(app,'innerHTML',{configurable:true,get:()=>renderedHTML,set:value=>{
     if(app.contains(context.document.activeElement))context.document.activeElement=context.document.body;
     renderedHTML=value;focusControls.clear();
+    buttons=Array.from(value.matchAll(/<button\b([^>]*)>/g),match=>{const node=new Node();node.type=/\btype="([^"]+)"/.exec(match[1])?.[1]||'submit';node.disabled=/\bdisabled\b/.test(match[1]);node.dataset={};for(const attr of match[1].matchAll(/\bdata-([\w-]+)="([^"]*)"/g))node.dataset[attr[1].replace(/-([a-z])/g,(_,c)=>c.toUpperCase())]=attr[2];return node;});
     for(const match of value.matchAll(/<(input|select|textarea)\b([^>]*)>/g)){
       const id=/\bid="([^"]+)"/.exec(match[2])?.[1];if(!id)continue;
       const node=new Node();node.id=id;node.name=/\bname="([^"]+)"/.exec(match[2])?.[1]||'';node.type=match[1]==='input'?/\btype="([^"]+)"/.exec(match[2])?.[1]||'text':match[1];node.value=/\bvalue="([^"]*)"/.exec(match[2])?.[1]||'';node.options=[];node.ownerDocument=context.document;node.ownedBy=app;
@@ -198,7 +207,7 @@ async function harness(role = 'cashier', clockStart = Date.now()) {
     }
     if(Array.isArray(filters.elements)){const controls=Array.from(focusControls.values()).filter(node=>node.id.startsWith('book-'));controls.namedItem=name=>controls.find(node=>node.name===name);for(const node of controls)controls[node.name]=node;filters.elements=controls;}
   }});
-  let source=fs.readFileSync(path.join(__dirname,'../web/app.js'),'utf8').replace('  boot();','  globalThis.testing={state,booking,reportFilter,render,updateTimers,bookView,cashierView,detailView,syncState,refreshAvailability};boot();');
+  let source=fs.readFileSync(path.join(__dirname,'../web/app.js'),'utf8').replace('  boot();','  globalThis.testing={state,booking,reportFilter,render,updateTimers,bookView,cashierView,detailView,syncState,refreshAvailability,sessionAmount,nightOffer:typeof nightOffer==="function"?nightOffer:null,ledgerView:typeof ledgerView==="function"?ledgerView:null,searchFilter:typeof searchFilter==="object"?searchFilter:null,reminderCandidates:typeof reminderCandidates==="function"?reminderCandidates:null,api};boot();');
   vm.runInNewContext(source, context);
   await turn();
   function invoke(name, target) {
@@ -222,7 +231,7 @@ async function harness(role = 'cashier', clockStart = Date.now()) {
     return input?.match(/\bvalue="([^"]*)"/)?.[1];
   }
   return {
-    app, dialog, fields, data, requests, availabilityRequests, reportRequests, holdNodes, errors, openView, changeBooking, renderedStart, document:context.document, testing:context.testing, invoke, focusControls, filters,
+    app, dialog, fields, data, requests, availabilityRequests, reportRequests, holdNodes, errors, openView, changeBooking, renderedStart, document:context.document, testing:context.testing, invoke, focusControls, filters, buttons:()=>buttons,
     advance(milliseconds){currentTime += milliseconds;},
     get nativePrompts(){return nativePrompts;},
     nextSlot(next){const button={dataset:{action:'next-start',nextStart:next},closest(selector){return selector==='button'?this:null;}};return invoke('click',button);},
@@ -231,7 +240,7 @@ async function harness(role = 'cashier', clockStart = Date.now()) {
       return invoke('click', button);
     },
     submit(type, id, values) {
-      const form = {dataset:{form:type, [type === 'payment' ? 'item' : 'payment']:String(id)}, values,
+      const form = {dataset:{form:type, [type === 'payment' ? 'item' : type === 'reschedule' ? 'booking' : type.startsWith('shift') ? 'id' : 'payment']:String(id)}, values,
         closest(selector){return selector === 'form[data-form]' ? this : null;}};
       return invoke('submit', form);
     },
@@ -457,4 +466,102 @@ test('changing from a future early time to today keeps the valid controlled star
 test('a rejected Start now price refreshes rates and requires a fresh review',async()=>{
  const h=await harness('cashier',fixed);h.testing.state.cashierTab='walkin';h.testing.booking.walkinMode='now';await h.openView('cashier');Object.assign(h.testing.booking,{pcId:1,guestName:'Visitor',method:'external',reference:'REF-REVIEW'});h.testing.state.data={...h.data,tiers:[{...h.data.tiers[0]}]};
  const submission=h.submit('walkin',0,{guest_name:'Visitor',method:'external',reference:'REF-REVIEW'});await turn();assert.equal(h.fields.get('#confirmation-amount').textContent,'₱54.99');h.data.tiers[0].price_pesos='60.00';h.data.startNowError=true;h.dialog.close('confirm');await submission;assert.equal(h.requests.length,1);assert.equal(h.dialog.open,false);assert.match(h.app.innerHTML,/₱108.00/);assert.match(h.app.innerHTML,/value="Visitor"/);assert.match(h.app.innerHTML,/value="REF-REVIEW"/);assert.equal(h.testing.state.busy,false);assert.equal(h.errors.length,0);
+});
+
+test('configurable night offer preview rounds exact centavos and permits zero or disabled offers',async()=>{
+ const h=await harness('customer',fixed);
+ assert.equal(h.testing.sessionAmount('30.55',1,'2026-10-07T00:45:00+08:00'),'27.50');
+ h.data.night_offer={enabled:true,percent:35,start_hour:0,end_hour:3};
+ assert.equal(h.testing.sessionAmount('30.55',1,'2026-10-07T02:45:00+08:00'),'25.20');
+ h.data.night_offer.percent=0;assert.equal(h.testing.sessionAmount('30.55',1,'2026-10-07T01:00:00+08:00'),'30.55');
+ h.data.night_offer={enabled:false,percent:80,start_hour:0,end_hour:24};assert.equal(h.testing.sessionAmount('30.55',1,'2026-10-07T01:00:00+08:00'),'30.55');
+});
+test('ledger includes payments and every refund state and filters reference, PC and status',async()=>{
+ const h=await harness('admin',fixed);h.testing.state.adminTab='ledger';await h.openView('admin');
+ assert.match(h.app.innerHTML,/PAY-31/);assert.match(h.app.innerHTML,/Station issue/);assert.match(h.app.innerHTML,/Approved return/);
+ Object.assign(h.testing.searchFilter.ledger,{query:'PAY-33',status:'approved'});h.testing.render();assert.match(h.app.innerHTML,/Approved return/);assert.doesNotMatch(h.app.innerHTML,/Station issue/);
+});
+test('offline financial writes are blocked and stale state offers a safe retry',async()=>{
+ const h=await harness('cashier',fixed);h.testing.state.connected=false;h.testing.render();
+ assert.match(h.app.innerHTML,/Connection lost|Café disconnected/);assert.match(h.app.innerHTML,/Last updated/);
+ await assert.rejects(h.testing.api('/api/payments',{item_id:11}),/Reconnect/);assert.equal(h.requests.length,0);
+});
+test('future booking exposes reschedule with separate refund and new payment explanation',async()=>{
+ const h=await harness('customer',fixed);h.testing.state.detailId=7;await h.openView('detail');assert.match(h.app.innerHTML,/data-form="reschedule"/);assert.match(h.app.innerHTML,/original.*refund/i);assert.match(h.app.innerHTML,/new.*payment/i);
+});
+test('shift, recovery and backup workspaces are reachable',async()=>{
+ const h=await harness('admin',fixed);for(const [tab,text]of[['recovery','Verify identity'],['backups','Restore'],['offer','Night offer'],['shifts','Opening cash']]){h.testing.state.adminTab=tab;await h.openView('admin');assert.ok(h.app.innerHTML.includes(text),tab);}
+ await h.openView('account');assert.match(h.app.innerHTML,/current_password/);assert.match(h.app.innerHTML,/Change password/);
+});
+test('reminders distinguish hold expiry and both play thresholds without promising free time',async()=>{
+ const h=await harness('customer',fixed);h.data.items[0].hold_until=new Date(fixed+90000).toISOString();h.data.bookings.push({id:10,pc_id:1,user_id:1,status:'active',end_at:new Date(fixed+240000).toISOString()});h.data.plays=[{booking_id:10}];
+ const reminders=h.testing.reminderCandidates();assert.ok(reminders.some(x=>x.key.startsWith('hold:')));assert.ok(reminders.some(x=>x.key.startsWith('play5:')));assert.ok(reminders.some(x=>x.key.startsWith('play10:')));assert.ok(reminders.every(x=>!x.message.includes('available extension')));
+});
+
+
+test('lost payment POST is never replayed by polling and safe GET reconnect',async()=>{
+ const h=await harness('cashier',fixed);h.data.failFetch=true;
+ await assert.rejects(h.testing.api('/api/payments',{item_id:11,method:'cash',key:'known'}),/result is unknown/);
+ assert.equal(h.testing.state.connected,false);assert.equal(h.requests.length,1);
+ await h.testing.syncState();assert.equal(h.requests.length,1);assert.equal(h.testing.state.connected,true);assert.equal(h.testing.state.uncertainPost,true);
+});
+test('reschedule confirmation cancel prevents request and approval sends exact frozen proposal once',async()=>{
+ const h=await harness('customer',fixed);const values={date:'2026-10-08',time:'01:15',pc_id:'1',slots:'3'};
+ let submission=h.submit('reschedule',7,values);await turn();assert.equal(h.dialog.open,true);h.dialog.close('cancel');await submission;assert.equal(h.requests.length,0);
+ submission=h.submit('reschedule',7,values);await turn();assert.match(h.fields.get('#confirmation-description').textContent,/refund/);h.dialog.close('confirm');await submission;
+ assert.deepEqual(h.requests[0],{url:'/api/reschedules',body:{booking_id:7,pc_id:1,start_at:'2026-10-07T17:15:00.000Z',slots:3,key:'test-key'}});assert.equal(h.errors.length,0);
+});
+test('offer editor allows zero discount and confirmation freezes its request',async()=>{
+ const h=await harness('admin',fixed);let submission=h.submit('offer',0,{enabled:true,percent:'0',start_hour:'2',end_hour:'7'});await turn();assert.equal(h.dialog.open,true);h.dialog.close('confirm');await submission;
+ assert.deepEqual(h.requests[0],{url:'/api/admin/discount',body:{enabled:true,percent:0,start_hour:2,end_hour:7}});assert.equal(h.errors.length,0);
+});
+test('shift close reviews expected and counted difference and sends exact PHP strings',async()=>{
+ const h=await harness('cashier',fixed);h.data.currentShift={id:55,opened_at:new Date(fixed).toISOString(),expected_cash_pesos:'100.50',opening_cash_pesos:'25.00',cash_payments_pesos:'85.50',cash_refunds_pesos:'10.00',external_payments_pesos:'99.00',external_refunds_pesos:'20.00',status:'open'};h.testing.state.cashierTab='shifts';await h.openView('cashier');await turn();
+ const submission=h.submit('shift-close',55,{counted_cash_pesos:'98.50',notes:'Missing cash'});await turn();assert.equal(h.fields.get('#confirmation-amount').textContent,'₱98.50');assert.match(h.fields.get('#confirmation-details').innerHTML,/-₱2.00|₱-2.00/);h.dialog.close('confirm');await submission;
+ assert.deepEqual(h.requests[0],{url:'/api/shifts/close',body:{shift_id:55,counted_cash_pesos:'98.50',notes:'Missing cash'}});assert.equal(h.errors.length,0);
+});
+test('admin recovery requires explicit identity confirmation and reveals a private one-use code',async()=>{
+ const h=await harness('admin',fixed);h.data.passwordRequests=[{id:61,name:'Player',email:'player@example.com',created_at:new Date(fixed).toISOString(),status:'pending'}];h.testing.state.adminTab='recovery';await h.openView('admin');await turn();
+ let pending=h.click('identity-reset',61);await turn();assert.equal(h.requests.length,0);h.dialog.close('cancel');await pending;assert.equal(h.requests.length,0);
+ pending=h.click('identity-reset',61);await turn();h.dialog.close('confirm');await pending;assert.deepEqual(h.requests[0],{url:'/api/admin/password-reset',body:{request_id:61,identity_verified:true}});assert.match(h.app.innerHTML,/a{64}/);assert.equal(h.errors.length,0);
+});
+test('password change requires matching passwords and current password payload',async()=>{
+ const h=await harness('customer',fixed);await h.submit('password',0,{current_password:'OldPassword!',new_password:'NewPassword!',repeat_password:'Mismatch!'});assert.equal(h.requests.length,0);
+ await h.submit('password',0,{current_password:'OldPassword!',new_password:'NewPassword!',repeat_password:'NewPassword!'});assert.deepEqual(h.requests[0],{url:'/api/account/password',body:{current_password:'OldPassword!',new_password:'NewPassword!'}});assert.equal(h.testing.state.user,null);assert.equal(h.testing.state.view,'auth');
+});
+test('ledger reference filter cannot include unrelated sibling payments',async()=>{
+ const h=await harness('cashier',fixed);h.testing.state.cashierTab='ledger';await h.openView('cashier');h.testing.searchFilter.ledger.query='PAY-31';h.testing.render();assert.match(h.app.innerHTML,/Station issue/);assert.doesNotMatch(h.app.innerHTML,/Approved return/);assert.doesNotMatch(h.app.innerHTML,/PAY-32/);
+});
+
+test('signing out removes an admin reset code and privileged resource cache',async()=>{
+ const h=await harness('admin',fixed);h.testing.state.resetCode={reset_code:'private',expires_at:new Date(fixed).toISOString()};h.testing.state.resources.recovery={requests:[{email:'private@example.com'}]};await h.click('logout');assert.equal(h.testing.state.resetCode,null);assert.deepEqual(Object.keys(h.testing.state.resources),[]);
+});
+test('admin can rotate an expired code only after verified identity confirmation',async()=>{
+ const h=await harness('admin',fixed);h.data.passwordRequests=[{id:63,name:'Player',email:'player@example.com',status:'expired'}];h.testing.state.adminTab='recovery';await h.openView('admin');await turn();assert.match(h.app.innerHTML,/Verify identity and issue code/);const pending=h.click('identity-reset',63);await turn();assert.equal(h.dialog.open,true);h.dialog.close('confirm');await pending;assert.equal(h.requests[0].body.identity_verified,true);
+});
+
+test('unreadable successful POST result requires record review before another financial write',async()=>{
+ const h=await harness('cashier',fixed);h.data.unreadablePost=true;await assert.rejects(h.testing.api('/api/payments',{item_id:11}),/result is unknown/);assert.equal(h.testing.state.connected,false);assert.equal(h.testing.state.uncertainPost,true);assert.equal(h.requests.length,1);
+});
+test('failed state refresh marks the saved information stale and blocks changes',async()=>{
+ const h=await harness('cashier',fixed);h.data.stateError=true;await h.testing.syncState();assert.equal(h.testing.state.connected,false);assert.match(h.testing.state.connectionError,/Database/);await assert.rejects(h.testing.api('/api/payments',{}),/Reconnect/);assert.equal(h.requests.length,0);
+});
+
+test('automatic reconnect restores eligible payment controls even when snapshot data is unchanged',async()=>{
+ const h=await harness('cashier',fixed);h.testing.state.cashierTab='payments';await h.openView('cashier');const original=h.buttons().find(b=>b.type==='submit');assert.equal(original.disabled,false);
+ h.data.failFetch=true;await h.testing.syncState();assert.equal(original.disabled,true);delete h.data.failFetch;await h.testing.syncState();assert.equal(h.testing.state.connected,true);assert.equal(h.buttons().find(b=>b.type==='submit').disabled,false);assert.equal(h.requests.length,0);
+});
+test('reconnect does not enable an unchecked booking checkout',async()=>{
+ const h=await harness('customer',fixed);await h.chooseBooking(new Date(fixed+3600000).toISOString(),2);h.testing.booking.checked=false;h.testing.render();assert.equal(h.buttons().find(b=>b.dataset.action==='hold').disabled,true);h.data.failFetch=true;await assert.rejects(h.testing.api('/api/state'));await h.click('connection-retry');assert.equal(h.buttons().find(b=>b.dataset.action==='hold').disabled,true);
+});
+for(const type of ['password','password-reset'])test(`${type} completion clears every private reset code and recovery resource`,async()=>{
+ const h=await harness('admin',fixed);h.testing.state.resetCode={reset_code:'private',expires_at:new Date(fixed).toISOString()};h.testing.state.resources.recovery={requests:[{email:'private@example.com'}]};h.testing.state.resetToken='old-token';await h.submit(type,0,{current_password:'OldPassword!',token:'new-token',new_password:'NewPassword!',repeat_password:'NewPassword!'});assert.equal(h.testing.state.resetCode,null);assert.equal(h.testing.state.resetToken,'');assert.deepEqual(Object.keys(h.testing.state.resources),[]);
+});
+
+
+test('automatic reconnect rebuilds controls while preserving external payment drafts',async()=>{
+ const h=await harness('cashier',fixed);h.testing.state.cashierTab='payments';await h.openView('cashier');
+ const controls=[{name:'method',value:'external',type:'select-one'},{name:'reference',value:'REF-KEPT',type:'text',readOnly:false,required:true,placeholder:'External receipt'}];controls.namedItem=name=>controls.find(x=>x.name===name);const help=new Node();help.textContent='Enter actual transaction reference';
+ const form={dataset:{form:'payment',item:'11'},elements:controls,querySelector:()=>help};h.app.querySelectorAll=selector=>selector==='form'?[form]:[];let html=h.app.innerHTML,rebuilds=0;Object.defineProperty(h.app,'innerHTML',{get:()=>html,set:value=>{html=value;rebuilds++;controls[0].value='cash';controls[1].value='CASH-000004';controls[1].readOnly=true;controls[1].required=false;help.textContent='Cash reference preview';}});
+ h.data.failFetch=true;await h.testing.syncState();delete h.data.failFetch;await h.testing.syncState();assert.ok(rebuilds>0);assert.equal(controls[0].value,'external');assert.equal(controls[1].value,'REF-KEPT');assert.equal(controls[1].readOnly,false);assert.equal(controls[1].required,true);assert.equal(help.textContent,'Enter actual transaction reference');assert.equal(h.requests.length,0);
 });

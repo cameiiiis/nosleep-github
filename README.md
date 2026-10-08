@@ -103,9 +103,10 @@ The first run may take longer while Go downloads dependencies from
 `go.mod`/`go.sum`. Internet is needed when the dependencies or required
 toolchain are not already available locally.
 
-Startup prepares the runtime database, opens/creates tables, applies supported
-migrations, seeds missing PCs and tiers, creates missing demo users when
-enabled, and starts the web server.
+Startup claims the server port, resolves the saved database choice, prepares
+the runtime when needed, applies supported migrations, seeds missing defaults,
+creates missing demo users when enabled, and takes a consistent backup before
+announcing that the web server is ready.
 
 The terminal remaining occupied is normal: the server is waiting for browser
 requests. Open another terminal for Git commands while it runs.
@@ -278,7 +279,12 @@ Regular price = **rate per 30 minutes × number of blocks**. All public amounts 
 **Philippine pesos (PHP)**. Enter `30.00` for ₱30.00 or `30.50` for ₱30.50.
 The backend calculates exact decimal amounts.
 
-All PCs receive **20% off daily from 1:00 AM until 6:00 AM Philippine time**.
+By default all PCs receive **20% off daily from 1:00 AM until 6:00 AM Philippine time**.
+Admins can change or disable this in **Admin > Night offer**. Choose an integral
+discount from 0–80% and start/end hours on the same Philippine calendar day;
+the end must be later than the start. These settings apply to newly held items
+and extensions, never to existing charges or receipts. A tiny calculated
+charge has a minimum of ₱0.01.
 Only billed minutes inside that window receive the discount. A Standard
 session from 12:30 AM to 1:30 AM costs ₱54.00: ₱30.00 for the first half-hour
 and ₱24.00 for the discounted half-hour. A session starting at 6:00 AM uses
@@ -448,6 +454,103 @@ sessions with 15 minutes or less remaining. Overnight sessions remain visible.
 Check-in controls and badges update at time boundaries. Background updates
 respect focused forms/open confirmations; use **Refresh** for an explicit check.
 
+### Searchable history and transaction ledger
+
+Players can search and filter **History** by reference, PC, booking status,
+refund status, and Philippine date. Cancelled paid bookings retain their
+payment/receipt and show refund progress; **Refunded** means money return
+was recorded as completed, not merely approved.
+
+Cashiers and admins have a **Ledger** showing bookings together with their
+payments, receipts and refunds. Search names, references, stations and payment
+references; use the date, payment and refund filters to find a transaction.
+The separate **Reports** view remains the source for collections/refunds by
+their recording/completion dates and CSV export.
+
+### Rescheduling a future reservation
+
+1. Open a future held or confirmed booking's **Details**.
+2. Choose a different PC, date/time or duration under **Reschedule**.
+3. Review the replacement price and price difference, then submit for review.
+4. Staff open **Cashier > Reschedules** or **Admin > Reschedules** to approve
+   or reject it. The original remains reserved until approval.
+
+Approval checks availability and pricing again in one database transaction.
+It cancels the original, releases its allocation, creates pending refunds for
+its remaining actual payments, and creates a new 10-minute hold for the same
+owner/guest. **The replacement needs a separate verified payment.** Handle the
+original money through normal admin approval and staff refund completion;
+the displayed price difference does not transfer or return funds. Original
+payments and receipts remain visible in history. A rejection keeps the old
+reservation unchanged. Changed prices or newly occupied slots block approval
+without partially moving the booking.
+
+Bookings that have started, have any extension or play record, or have pending
+or approved refunds cannot be rescheduled. Only one pending proposal is allowed.
+Proposals do not reserve extra time before approval; staff must review them
+while the original remains eligible.
+
+### Cashier shift reconciliation
+
+1. Open **Cashier > Shift** and enter the opening cash in Philippine pesos.
+2. Use the usual verified payment and completed refund actions during the shift.
+3. Review cash collections, external collections, cash refunds, external refunds,
+   and expected cash; enter the actual counted cash and notes to close.
+4. The difference is counted cash minus expected cash. Closed totals are frozen.
+
+Expected cash = opening cash + cash collections − completed cash refunds.
+External transfers are shown separately and do not change the cash drawer.
+Only payments recorded by that cashier and refunds completed by that cashier
+after opening through closing are included, even when events share a timestamp.
+Refund method comes from the original payment. Cashiers see their own shifts;
+admins can inspect all shifts and close an open one. Only one shift can be open
+per cashier. Opening a shift is optional for the existing payment workflow;
+transactions outside a shift will not be included in a later shift.
+
+### In-app reminders and connection state
+
+While the page is open, held items approaching two minutes remaining and play
+sessions approaching ten and five minutes remaining produce in-app reminders.
+Each threshold is deduplicated during the page session. The extension shortcut
+opens the normal flow; the server still checks availability before a new hold.
+These are browser-page reminders, not SMS, email or notifications after closing
+the page.
+
+A connection banner shows failed updates, the last successful update, and a
+retry action. Cached details can be stale. Writes are blocked while offline.
+The app never automatically repeats a payment/refund POST after a network error;
+if the response was lost, reconnect and check the ledger before retrying so
+you know whether the server saved the action.
+
+### Change Password and Forgot Password
+
+Signed-in users choose **Account > Change password**, enter the current password,
+and enter/repeat a new password. New passwords must be 8–72 bytes. Success
+revokes every session for the account; sign in again with the new password.
+
+For forgotten passwords:
+
+1. Choose **Forgot password?** on Sign in and enter the account email.
+2. The response is generic for privacy. The request waits for admin approval;
+   submitting it alone never creates or emails a reset code.
+3. Admin opens **Admin > Password recovery**, verifies the person's identity
+   outside the application, and confirms **Identity verified · issue code**.
+4. Give that code privately to the verified owner. Configured SMTP can email
+   the approved code's reset link after this admin action. The owner chooses
+   **Enter reset code**, enters it with a new/repeated password, then signs in.
+
+Codes expire in 15 minutes, work once, and are stored only as hashes. Reissuing
+invalidates the earlier code. Password reset/change revokes all account sessions.
+**Every forgotten-password reset requires admin approval.** Cashiers and players
+cannot issue codes. The normal signed-in Change Password still requires the
+current password. Older automatically emailed codes without an admin issuer
+are invalidated and their requests return to pending admin review on startup.
+Inactive accounts cannot recover access. Attempts are limited over 15 minutes,
+including across server restarts. A request is not proof of identity: admin
+must verify ownership before giving a code. Never put codes in public chat,
+screenshots, Git or logs. SMTP setup is described under Configuration; local
+admin-assisted recovery does not require an email provider.
+
 ### Admin management
 
 | Operations section | Function |
@@ -460,6 +563,12 @@ respect focused forms/open confirmations; use **Refresh** for an explicit check.
 | Maintenance | PC, interval, private notes, optional public explanation |
 | Refunds | Approval/rejection decisions |
 | Audit | Recorded actions, actor IDs, timestamps |
+| Ledger | Search bookings, payments, receipts and all refund states |
+| Night offer | Discount percentage, Philippine start/end hours and enabled state |
+| Reschedules | Review future replacement booking requests |
+| Shifts | Cashier reconciliation and frozen close totals |
+| Password recovery | Verified identity, one-use reset code issuance |
+| Backups | Automatic status, create now, retained backup downloads and restore help |
 
 Maintenance rejects conflicts with allocated sessions. Private staff notes
 remain staff-only; the public explanation can describe downtime on customer
@@ -483,26 +592,33 @@ is disabled for loading/failed reports or an edited range not yet applied.
 
 ### Backup and restore
 
-Admin: open **Operations > Overview > Download database backup**. It downloads
-a consistent SQLite snapshot, including committed write-ahead-log records if
-WAL is in use. It contains accounts, authentication records, guest names,
-bookings, payments, and the other tables; keep it private. CSV is a report,
-not a complete backup.
+Automatic consistent SQLite backups run at startup and hourly while Go runs.
+The latest **seven** snapshots (automatic and Create now together) are kept in
+ignored `data/backups`. Open **Admin > Backups** for status, **Create backup now**,
+and downloads. The existing Overview download still provides an immediate
+snapshot. Committed WAL data is included; copying only a live SQLite main file
+can miss committed records. Backups contain private accounts, authentication
+records, names and financial history. CSV is not a complete database backup.
 
 To restore locally:
 
 1. Stop Go with **Ctrl+C**.
-2. Preserve your existing working database.
-3. Copy the downloaded backup to `data`, for example `restored.sqlite`.
-4. In PowerShell, run:
+2. Stop every other server instance using that database, including any on another port.
+3. Choose a retained backup, or copy a downloaded backup into `data/backups`.
+4. In the project folder run, replacing the filename:
 
 ```powershell
-$env:NO_SLEEP_DB = 'data/restored.sqlite'
+go run . -restore 'data/backups/nosleep-YYYYMMDD-HHMMSS-unique.db'
 go run .
 ```
 
-This opens the restored file directly. Set that variable again in a new
-terminal to continue using it. Configuration below explains clearing overrides.
+The restore command validates SQLite integrity and required record links, then
+installs a consistent snapshot at the **saved active database path**. It retains
+the old database and any WAL/SHM companions under a printed
+`.before-restore-...db` rollback name. It does not start the web server; the second
+command starts it. A server already using the configured address blocks restore.
+To undo, stop all instances and use `-restore` with the printed rollback path.
+Keep an additional copy outside the computer for protection against disk loss.
 
 ## Database guide
 
@@ -513,17 +629,25 @@ local file; no database service or database login credentials are needed.
 
 | File | Purpose |
 | --- | --- |
-| `data/nosleep.db` | Included starter, read-only source for the first default runtime copy |
+| `data/nosleep.db` | Included starter; may also be a legacy explicitly chosen working file |
 | `data/runtime.db` | Default working file; saves local accounts/bookings/payments/sessions |
-| Path in `NO_SLEEP_DB` | Custom working file for that run |
+| `data/local-config.json` | Ignored saved active database selection |
+| `data/backups/*.db` | Ignored retained consistent backups |
+| Path in `NO_SLEEP_DB` | Explicit working file; overrides and updates the saved choice |
 
 An existing runtime is kept. If missing, startup snapshots the starter into
 it. If the starter is missing too, startup initializes a new database.
 Supported older schemas receive migrations without discarding their records.
 Previously used starters also copy their existing records into a new runtime.
 
-Relative paths resolve from the server's working directory. Running from
-another folder can select another `data` folder. An explicit `NO_SLEEP_DB`
+The absolute active database path is printed at startup. Its selection is saved
+locally and reused in new terminals, so stopping/restarting no longer silently
+changes back to another database. On the first selection, a legacy starter is
+chosen over runtime only if it provably contains all runtime business records
+unchanged plus additional records. Divergent files produce a warning and keep
+runtime; the app never merges or overwrites them. Choose explicitly if needed.
+
+Relative paths resolve from the project working directory. An explicit `NO_SLEEP_DB`
 opens/creates that file directly; it does not copy the starter to a new custom
 path automatically.
 
@@ -577,6 +701,11 @@ Defined in `internal/app/schema.sql`:
 | `plays` | Actual start and optional actual end |
 | `refunds` | Payment-linked amounts/reasons, decisions, completion |
 | `audit` | Actor, action, affected record, time |
+| `night_offer` | Persisted discount enablement, percentage and hours |
+| `reschedules` | Original/replacement booking proposal, stored quotes and review state |
+| `cashier_shifts` | Opening boundaries, closed totals, cash count and difference |
+| `password_requests` | Account recovery state, hashed code and expiry |
+| `account_attempts` | Bounded, hashed recovery/change attempt counters |
 
 One booking has one PC, a base charge, and optional extension items. Each paid
 item has a payment/receipt. Walk-ins add guest metadata rather than guest
@@ -617,6 +746,9 @@ nosleep-github/
 │   ├── models.go / store.go / schema.sql / snapshot.go
 │   ├── bookings.go / walkin.go / admin.go
 │   ├── operations.go / tools.go / runtime.go
+│   ├── account.go / account_smtp.go
+│   ├── cafe.go / cafe_reschedules.go / cafe_shifts.go
+│   ├── pricing.go / local_config.go / backup_service.go
 │   ├── pesos.go / peso_migration.go
 │   ├── *_test.go
 │   └── testdata/legacy.sql
@@ -625,7 +757,9 @@ nosleep-github/
 │   └── payment-confirmation.test.cjs
 └── data/
     ├── nosleep.db
-    └── runtime.db       Created locally; ignored by Git
+    ├── runtime.db       Created locally; ignored by Git
+    ├── local-config.json Saved active database; ignored by Git
+    └── backups/         Retained snapshots; ignored by Git
 ```
 
 | File | Responsibility |
@@ -646,6 +780,14 @@ nosleep-github/
 | `internal/app/operations.go` | Availability reasons/alternatives and Philippine-date reports |
 | `internal/app/tools.go` | Reference lookup, CSV, admin backup downloads |
 | `internal/app/runtime.go` | Safe starter copy and consistent SQLite snapshots |
+| `internal/app/account.go` | Password change, one-use recovery, admin issuance, attempt limits and verified login insertion |
+| `internal/app/account_smtp.go` | Optional TLS email delivery and private fragment reset links |
+| `internal/app/cafe.go` | Persisted night-offer settings and new café route registration |
+| `internal/app/cafe_reschedules.go` | Transactional proposal/approval, replacement allocation and original cancellation/refund |
+| `internal/app/cafe_shifts.go` | Staff-attributed exact totals, opening boundaries and immutable closing reconciliation |
+| `internal/app/pricing.go` | Exact configured night discount calculations for new items |
+| `internal/app/local_config.go` | Portable saved database choice and conservative record comparisons |
+| `internal/app/backup_service.go` | Consistent periodic backups, retention/download and validated offline restore |
 | `internal/app/pesos.go` | Exact parsing/formatting, JSON/SQL amounts, refund calculations |
 | `internal/app/peso_migration.go` | Supported earlier money-schema conversion without double conversion |
 | Go `*_test.go` files | Backend/database/HTTP regression checks |
@@ -703,11 +845,13 @@ are used by `go test`, rather than compiled into the normal running app.
 
 ```text
 go run .
-  -> main(): read configuration
+  -> main(): read configuration and claim listening port
+  -> ResolveDatabase(): persist/reuse chosen database path
   -> prepare default runtime if missing
   -> OpenStore(): open SQLite, ensure schema, apply migrations
   -> NewHandler(): seed missing defaults/demo users, register routes
-  -> ListenAndServe(): receive browser requests
+  -> BackupManager.Start(): initial snapshot, hourly schedule
+  -> Serve(): receive browser requests on claimed listener
   -> browser loads embedded HTML/CSS/JS
   -> app.js requests /api/me, then authorized /api/state
 ```
@@ -776,6 +920,20 @@ manual API calls are not necessary to operate the application.
 | POST | `/api/admin/maintenance` | Admin maintenance window |
 | POST | `/api/admin/users/role` | Admin role change |
 | POST | `/api/admin/users/active` | Admin activation change |
+| POST | `/api/account/password` | Signed-in password change; current password required |
+| POST | `/api/password/forgot` | Public generic recovery request |
+| POST | `/api/password/reset` | Public reset with expiring one-use code |
+| GET | `/api/admin/password-requests` | Admin recovery queue |
+| POST | `/api/admin/password-reset` | Admin code issuance after explicit identity verification |
+| POST | `/api/admin/discount` | Admin night-offer configuration |
+| POST | `/api/reschedules` | Own/staff future booking proposal |
+| POST | `/api/reschedules/action` | Staff approve/reject proposal |
+| GET | `/api/shifts` | Own cashier shifts; all shifts for admin |
+| POST | `/api/shifts/open` | Staff opening cash |
+| POST | `/api/shifts/close` | Owner/admin cash count and immutable close |
+| GET | `/api/admin/backups` | Admin retained files and automatic status |
+| POST | `/api/admin/backups` | Admin create snapshot now |
+| GET | `/api/admin/backups/file?name=...` | Admin download retained snapshot |
 
 POSTs use JSON, the current form-session cookie plus matching `X-CSRF-Token`,
 and a login cookie where authenticated. Unknown JSON fields are rejected.
@@ -805,8 +963,13 @@ matching quote. Typical statuses: 400 invalid input, 401 authentication,
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `NO_SLEEP_ADDR` | `127.0.0.1:8080` | Listening address/port |
-| `NO_SLEEP_DB` | `data/runtime.db` | Working SQLite file |
+| `NO_SLEEP_DB` | Saved choice, initially `data/runtime.db` | Explicit SQLite selection; saves the choice for future terminals |
 | `NO_SLEEP_DEMO` | Enabled unless exactly `0` | Create missing demo users |
+| `NO_SLEEP_SMTP_ADDR` | Unset | Optional SMTP `host:port`; TLS required |
+| `NO_SLEEP_SMTP_FROM` | Unset | Plain sender email address |
+| `NO_SLEEP_PUBLIC_URL` | Unset | Reachable HTTPS origin/path used for emailed reset links |
+| `NO_SLEEP_SMTP_USER` | Unset | Optional SMTP authentication username |
+| `NO_SLEEP_SMTP_PASSWORD` | Unset | Optional SMTP authentication secret; set together with username |
 
 Set variables in the **same terminal** before starting. They are not loaded
 automatically from a `.env` file.
@@ -831,7 +994,41 @@ go run .
 ```
 
 Existing data stays; a missing custom file is initialized with missing defaults.
-Use a known backup path to restore known data.
+The choice is saved in `data/local-config.json`. Restarting from another terminal
+reuses it even without the environment variable. To return deliberately to the
+standard runtime, start once with `$env:NO_SLEEP_DB = 'data/runtime.db'`.
+Use the offline `-restore` command to restore a known backup into that active path.
+
+### Optional password recovery email
+
+Admin-approved recovery works immediately without SMTP. To email links only
+after the admin verifies identity and issues a code, configure your SMTP
+provider and the deployed HTTPS URL:
+
+```powershell
+$env:NO_SLEEP_SMTP_ADDR = 'smtp.example.com:587'
+$env:NO_SLEEP_SMTP_FROM = 'support@example.com'
+$env:NO_SLEEP_SMTP_USER = 'provider-username'
+$env:NO_SLEEP_SMTP_PASSWORD = 'provider-app-password'
+$env:NO_SLEEP_PUBLIC_URL = 'https://your-cafe.example/'
+go run .
+```
+
+These are placeholders; use your operator/provider settings. Port 465 uses
+implicit TLS; other ports require STARTTLS. Certificates and hostnames are
+verified, with TLS 1.2 or later. Plaintext SMTP is refused. Sender/address/public
+URL settings must be valid. Username and password can both be omitted for an
+authenticated-by-network TLS relay. Keep credentials out of Git, README copies
+and screenshots. `.env` files are ignored but are not automatically loaded.
+
+The public URL must use HTTPS. A local `127.0.0.1` development server uses the
+admin-assisted code workflow unless you provide a reachable HTTPS deployment.
+Reset links put codes in a URL fragment; the frontend removes it and sends the
+code only in the reset POST. Mail sending is asynchronous; it is not a durable
+mail queue. Failed delivery preserves the approved code so the admin can give
+it privately to the verified owner. Administrators can rotate it after verifying
+identity. No third-party messages are sent unless the operator configures this
+service and an admin approves a recovery request.
 
 Disable missing-demo-user seeding:
 
@@ -853,8 +1050,9 @@ Remove-Item Env:\NO_SLEEP_DEMO -ErrorAction SilentlyContinue
 go run .
 ```
 
-These remove terminal environment settings, not database files. New terminals
-need custom settings set again unless configured separately. On macOS/Linux,
+These remove terminal environment settings, not database files or the saved
+database choice. New terminals need address/demo/SMTP settings set again unless
+configured separately; the database choice remains saved locally. On macOS/Linux,
 use your shell's syntax, such as `unset NO_SLEEP_ADDR`, rather than
 PowerShell syntax.
 
@@ -934,7 +1132,11 @@ also inspect actual browser screens when changing CSS/layout/browser behavior.
    it as staff after the simulated money return.
 6. Try **Walk-in > Start now** on a free PC; inspect receipt and active play.
 7. End play, schedule nonconflicting maintenance, and view its public explanation.
-8. Download an admin backup and inspect it in a SQLite viewer.
+8. Open a shift, record payment/refund actions, close with a cash count and inspect the difference.
+9. Change the night offer; verify new previews change while old receipts stay unchanged.
+10. Request a future reschedule, approve it, and inspect original refunds and the new hold/payment.
+11. Try Forgot password in another profile; verify identity as admin, issue a code, reset and sign in.
+12. Create/download an admin backup; stop Go and practice the offline restore on demo data.
 
 Use local demo data. Staff verification represents the real-world cashier's
 action; the app itself does not collect or send funds.
@@ -953,7 +1155,7 @@ action; the app itself does not collect or send funds.
 | HTML displays but API fails | Use the Go server URL instead of a file URL/Live Server |
 | UI edits do not appear | Save, restart/rebuild Go, refresh browser |
 | Database has no new records | Inspect runtime/custom file, not the starter |
-| Data appears missing after moving | Check working directory and `NO_SLEEP_DB`; another file may be open |
+| Data appears missing after moving | Check printed database path, `data/local-config.json`, and explicit `NO_SLEEP_DB`; never merge/delete files blindly |
 | Database locked/busy | Close viewer write transactions; avoid two servers on one DB; do not delete SQLite companion files to bypass locks |
 | No admin with demo disabled | New databases do not get an automatic admin; check intended existing/demo setup |
 | Demo credentials fail | Existing password/role/activation are preserved; check active DB/account state |
@@ -966,6 +1168,12 @@ action; the app itself does not collect or send funds.
 | Report day seems wrong | Payment recording/refund completion use Philippine dates, not booking dates |
 | Too many attempts | Wait for the 15-minute attempt window instead of repeated retries |
 | Form/permission error | Refresh/sign in as needed; keep same host and check role |
+| Connection lost after payment/refund | Reconnect and inspect Ledger before retrying; a lost response may follow a committed action |
+| Forgot Password sends no email | The request waits for admin approval; email is attempted only after approved issuance when SMTP is configured |
+| Reset code expired or invalid | Ask admin to verify identity and reissue; codes expire after 15 minutes and work once |
+| Reschedule approval rejected | Recheck timing, maintenance/occupancy, quote changes and original booking eligibility |
+| Shift difference nonzero | Compare counted drawer against opening + cash collected − completed cash refunds; external payments are separate |
+| Backup status failed | Check free disk space and permissions for `data/backups`, then create a new backup |
 
 Do not delete your working database to fix a setup problem. Identify its
 path and preserve a backup before intentional data changes.
@@ -988,13 +1196,13 @@ Current boundaries:
 - No bank, wallet, payment-gateway, or automatic refund integration.
 - No physical-PC power control or automatic game termination.
 - Git does not synchronize live data between local clones.
-- No password-reset/email-verification service or automatic notifications.
-- Backups are manual downloads; no automatic backup schedule.
+- Password recovery requires verified admin approval; optional SMTP delivers
+  already-approved codes. No durable email queue or email-verification registration flow.
+- Session/hold reminders work while the page is open; no SMS or closed-browser push.
+- Automatic backups are local; an external backup copy is still the operator's responsibility.
 - SQLite writes are serialized for this local app; larger deployments should
   evaluate concurrency and storage requirements.
 
 For a teammate's local setup, install Go, open this project, run `go run .`,
 and open the printed browser address. Source and the starter are portable;
 local compiler caches are not needed for the handoff.
-#   n o s l e e p - g i t h u b  
- 

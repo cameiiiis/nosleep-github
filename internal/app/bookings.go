@@ -182,51 +182,59 @@ func (s *Store) CancelBooking(actor User, bookingID int64) error {
 		if played > 0 {
 			return ErrConflict
 		}
-		if _, e = tx.Exec("DELETE FROM booking_slots WHERE item_id IN (SELECT id FROM booking_items WHERE booking_id=?)", bookingID); e != nil {
-			return e
-		}
-		if _, e = tx.Exec("UPDATE booking_items SET status='cancelled' WHERE booking_id=? AND status='held'", bookingID); e != nil {
-			return e
-		}
-		if _, e = tx.Exec("UPDATE bookings SET status='cancelled' WHERE id=?", bookingID); e != nil {
-			return e
-		}
-		rows, e := tx.Query("SELECT id,amount_pesos FROM payments WHERE booking_id=?", bookingID)
-		if e != nil {
-			return e
-		}
-		type paid struct {
-			id     int64
-			amount Pesos
-		}
-		var payments []paid
-		for rows.Next() {
-			var p paid
-			if e = rows.Scan(&p.id, &p.amount); e != nil {
-				rows.Close()
-				return e
-			}
-			payments = append(payments, p)
-		}
-		e = rows.Err()
-		rows.Close()
-		if e != nil {
-			return e
-		}
-		for _, p := range payments {
-			reserved, e := reservedRefundAmount(tx, p.id)
-			if e != nil {
-				return e
-			}
-			if reserved >= p.amount {
-				continue
-			}
-			if _, e = tx.Exec("INSERT INTO refunds(payment_id,booking_id,amount_pesos,reason,status,requested_by,created_at) VALUES(?,?,?,'Booking cancelled','pending',?,?)", p.id, bookingID, p.amount-reserved, actor.ID, stamp(now)); e != nil {
-				return e
-			}
-		}
-		return audit(tx, actor.ID, "booking.cancelled", bookingID, now)
+		return cancelBookingTx(tx, actor, bookingID, now)
 	})
+}
+
+func cancelBookingTx(tx *sql.Tx, actor User, bookingID int64, now time.Time) error {
+	_, e := tx.Exec("DELETE FROM booking_slots WHERE item_id IN (SELECT id FROM booking_items WHERE booking_id=?)", bookingID)
+	if e != nil {
+		return e
+	}
+	if _, e = tx.Exec("UPDATE booking_items SET status='cancelled' WHERE booking_id=? AND status='held'", bookingID); e != nil {
+		return e
+	}
+	if _, e = tx.Exec("UPDATE bookings SET status='cancelled' WHERE id=?", bookingID); e != nil {
+		return e
+	}
+	rows, e := tx.Query("SELECT id,amount_pesos FROM payments WHERE booking_id=?", bookingID)
+	if e != nil {
+		return e
+	}
+	type paid struct {
+		id     int64
+		amount Pesos
+	}
+	var payments []paid
+	for rows.Next() {
+		var p paid
+		if e = rows.Scan(&p.id, &p.amount); e != nil {
+			rows.Close()
+			return e
+		}
+		payments = append(payments, p)
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return e
+	}
+	for _, p := range payments {
+		reserved, e := reservedRefundAmount(tx, p.id)
+		if e != nil {
+			return e
+		}
+		if reserved > p.amount {
+			return ErrConflict
+		}
+		if reserved == p.amount {
+			continue
+		}
+		if _, e = tx.Exec("INSERT INTO refunds(payment_id,booking_id,amount_pesos,reason,status,requested_by,created_at) VALUES(?,?,?,'Booking cancelled','pending',?,?)", p.id, bookingID, p.amount-reserved, actor.ID, stamp(now)); e != nil {
+			return e
+		}
+	}
+	return audit(tx, actor.ID, "booking.cancelled", bookingID, now)
 }
 func (s *Store) StartPlay(actor User, bookingID int64) error {
 	now := s.now()
@@ -357,7 +365,10 @@ func (s *Store) ExtendBooking(actor User, bookingID int64, slots int, key string
 			return e
 		}
 		hold := now.Add(10 * time.Minute)
-		amount := sessionPrice(price, b.EndAt, slots)
+		amount, e := sessionPriceTx(tx, price, b.EndAt, slots)
+		if e != nil {
+			return e
+		}
 		result, e := tx.Exec("INSERT INTO booking_items(booking_id,kind,slots,unit_pesos,amount_pesos,status,hold_until,expected_end,proposed_end,extension_key) VALUES(?,'extension',?,?,?,'held',?,?,?,?)", bookingID, slots, price, amount, stamp(hold), stamp(b.EndAt), stamp(proposed), key)
 		if e != nil {
 			return e
@@ -376,6 +387,10 @@ func (s *Store) ExtendBooking(actor User, bookingID int64, slots int, key string
 }
 
 func createReservation(tx *sql.Tx, actor User, pcID int64, start time.Time, slots int, key, guestName string, now time.Time) (Booking, error) {
+	return createReservationExcluding(tx, actor, pcID, start, slots, key, guestName, now, 0)
+}
+
+func createReservationExcluding(tx *sql.Tx, actor User, pcID int64, start time.Time, slots int, key, guestName string, now time.Time, oldBookingID int64) (Booking, error) {
 	end := start.Add(time.Duration(slots) * slot)
 	var enabled bool
 	var price Pesos
@@ -389,12 +404,16 @@ func createReservation(tx *sql.Tx, actor User, pcID int64, start time.Time, slot
 	if !enabled {
 		return Booking{}, ErrConflict
 	}
-	busy, e := occupied(tx, pcID, start, end)
+	busy, e := occupiedExcluding(tx, pcID, start, end, oldBookingID)
 	if e != nil {
 		return Booking{}, e
 	}
 	if busy {
 		return Booking{}, ErrConflict
+	}
+	amount, e := sessionPriceTx(tx, price, start, slots)
+	if e != nil {
+		return Booking{}, e
 	}
 	hold := now.Add(10 * time.Minute)
 	r, e := tx.Exec("INSERT INTO bookings(reference,user_id,pc_id,start_at,end_at,status,hold_until,checkout_key,created_at) VALUES('',?,?,?,?,?,?,?,?)", actor.ID, pcID, stamp(start), stamp(end), "held", stamp(hold), key, stamp(now))
@@ -406,12 +425,12 @@ func createReservation(tx *sql.Tx, actor User, pcID int64, start time.Time, slot
 	if _, e = tx.Exec("UPDATE bookings SET reference=? WHERE id=?", ref, id); e != nil {
 		return Booking{}, e
 	}
-	r, e = tx.Exec("INSERT INTO booking_items(booking_id,kind,slots,unit_pesos,amount_pesos,status,hold_until,expected_end,proposed_end) VALUES(?,'base',?,?,?,'held',?,?,?)", id, slots, price, sessionPrice(price, start, slots), stamp(hold), stamp(start), stamp(end))
+	r, e = tx.Exec("INSERT INTO booking_items(booking_id,kind,slots,unit_pesos,amount_pesos,status,hold_until,expected_end,proposed_end) VALUES(?,'base',?,?,?,'held',?,?,?)", id, slots, price, amount, stamp(hold), stamp(start), stamp(end))
 	if e != nil {
 		return Booking{}, e
 	}
 	itemID, _ := r.LastInsertId()
-	if e = reserve(tx, pcID, itemID, start, slots); e != nil {
+	if e = reserveExcluding(tx, pcID, itemID, start, slots, oldBookingID); e != nil {
 		return Booking{}, e
 	}
 	if guestName != "" {

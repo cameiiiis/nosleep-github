@@ -111,22 +111,24 @@ type Report struct {
 	ActiveSessions int64 `json:"active_sessions"`
 }
 type Snapshot struct {
-	User        User          `json:"user"`
-	PCs         []PC          `json:"pcs"`
-	Tiers       []Tier        `json:"tiers"`
-	Maintenance []Maintenance `json:"maintenance"`
-	Bookings    []Booking     `json:"bookings"`
-	WalkIns     []WalkIn      `json:"walk_ins"`
-	Items       []BookingItem `json:"items"`
-	Payments    []Payment     `json:"payments"`
-	Receipts    []Receipt     `json:"receipts"`
-	Plays       []PlaySession `json:"plays"`
-	Refunds     []Refund      `json:"refunds"`
-	Users       []User        `json:"users"`
-	Customers   []Customer    `json:"customers"`
-	Audit       []AuditEvent  `json:"audit"`
-	Report      Report        `json:"report"`
-	ServerTime  time.Time     `json:"server_time"`
+	NightOffer  NightOffer          `json:"night_offer"`
+	Reschedules []RescheduleRequest `json:"reschedules"`
+	User        User                `json:"user"`
+	PCs         []PC                `json:"pcs"`
+	Tiers       []Tier              `json:"tiers"`
+	Maintenance []Maintenance       `json:"maintenance"`
+	Bookings    []Booking           `json:"bookings"`
+	WalkIns     []WalkIn            `json:"walk_ins"`
+	Items       []BookingItem       `json:"items"`
+	Payments    []Payment           `json:"payments"`
+	Receipts    []Receipt           `json:"receipts"`
+	Plays       []PlaySession       `json:"plays"`
+	Refunds     []Refund            `json:"refunds"`
+	Users       []User              `json:"users"`
+	Customers   []Customer          `json:"customers"`
+	Audit       []AuditEvent        `json:"audit"`
+	Report      Report              `json:"report"`
+	ServerTime  time.Time           `json:"server_time"`
 }
 
 type Customer struct {

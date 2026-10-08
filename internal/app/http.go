@@ -61,6 +61,9 @@ func NewHandler(store *Store, assets fs.FS, demo bool) (http.Handler, error) {
 	a.registerOperationsRoutes(mux)
 	a.registerWalkInRoutes(mux)
 	a.registerToolsRoutes(mux)
+	a.registerAccountRoutes(mux)
+	a.registerCafeRoutes(mux)
+	a.registerBackupRoutes(mux)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { reply(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /api/me", func(w http.ResponseWriter, r *http.Request) {
 		csrf := a.csrfCookie(w, r)
@@ -458,7 +461,7 @@ func (a *api) signIn(w http.ResponseWriter, r *http.Request, u User) error {
 		}
 	}
 	v := token()
-	if e := a.store.SaveAuth(hashToken(v), u.ID, time.Now().Add(12*time.Hour)); e != nil {
+	if e := a.store.SaveVerifiedAuth(hashToken(v), u, time.Now().Add(12*time.Hour)); e != nil {
 		return e
 	}
 	setCookie(w, r, "nosleep_session", v, 12*3600, true)
