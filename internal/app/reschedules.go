@@ -1,5 +1,7 @@
 package app
 
+// Future booking proposals and transactional staff approval.
+
 import (
 	"database/sql"
 	"errors"

@@ -1,5 +1,7 @@
 package app
 
+// Guest reservations and immediate sessions with verified payment.
+
 import (
 	"database/sql"
 	"errors"

@@ -1,5 +1,7 @@
 package app
 
+// Cashier opening cash, payment/refund totals and closing reconciliation.
+
 import (
 	"database/sql"
 	"math"

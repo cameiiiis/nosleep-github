@@ -1,5 +1,7 @@
 package app
 
+// Consistent automatic backups, downloads, retention and offline restore.
+
 import (
 	"context"
 	"database/sql"

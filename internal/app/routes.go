@@ -1,5 +1,7 @@
 package app
 
+// Main browser API routes, login/register and common request/response helpers.
+
 import (
 	"crypto/rand"
 	"crypto/sha256"

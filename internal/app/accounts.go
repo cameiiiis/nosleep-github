@@ -1,17 +1,29 @@
 package app
 
+// Password changes, admin-approved recovery, login attempt limits and optional email.
+
 import (
+	"crypto/tls"
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"golang.org/x/crypto/bcrypt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/mail"
+	"net/smtp"
+	"net/url"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
-
-	"golang.org/x/crypto/bcrypt"
 )
+
+// --- Password change and admin-approved recovery ---
 
 const resetLifetime = 15 * time.Minute
 
@@ -347,4 +359,240 @@ func (a *api) registerAccountRoutes(mux *http.ServeMux) {
 		}
 		return code, nil
 	})
+}
+
+// --- Limit repeated login and registration attempts ---
+
+const attemptWindow = 15 * time.Minute
+
+type loginWindow struct {
+	count   int
+	pending int
+	until   time.Time
+}
+type rateLimiter struct {
+	mu                           sync.Mutex
+	accounts, ips, registrations map[string]loginWindow
+	cleanupAt                    time.Time
+}
+
+func requestIP(r *http.Request) string {
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return ip
+}
+func (l *rateLimiter) prepare(now time.Time) {
+	if l.accounts == nil {
+		l.accounts = map[string]loginWindow{}
+		l.ips = map[string]loginWindow{}
+		l.registrations = map[string]loginWindow{}
+	}
+	if !now.Before(l.cleanupAt) {
+		for _, m := range []map[string]loginWindow{l.accounts, l.ips, l.registrations} {
+			for key, v := range m {
+				if !now.Before(v.until) && v.pending == 0 {
+					delete(m, key)
+				}
+			}
+		}
+		l.cleanupAt = now.Add(time.Minute)
+	}
+}
+func underLimit(m map[string]loginWindow, key string, limit, capacity int, now time.Time) bool {
+	v, exists := m[key]
+	if !now.Before(v.until) {
+		v.count = 0
+	}
+	return (!exists && len(m) < capacity) || (exists && v.count+v.pending < limit)
+}
+func addAttempt(m map[string]loginWindow, key string, capacity int, now time.Time) {
+	v, exists := m[key]
+	if !exists && len(m) >= capacity {
+		return
+	}
+	if !now.Before(v.until) {
+		v = loginWindow{until: now.Add(attemptWindow), pending: v.pending}
+	}
+	v.count++
+	m[key] = v
+}
+func (l *rateLimiter) allowLogin(email, ip string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.prepare(now)
+	key := hashToken(email)
+	if !underLimit(l.accounts, key, 5, 4096, now) || !underLimit(l.ips, ip, 100, 1024, now) {
+		return false
+	}
+	reserveAttempt(l.accounts, key, now)
+	reserveAttempt(l.ips, ip, now)
+	return true
+}
+func reserveAttempt(m map[string]loginWindow, key string, now time.Time) {
+	v := m[key]
+	if !now.Before(v.until) {
+		v.count = 0
+		v.until = now.Add(attemptWindow)
+	}
+	v.pending++
+	m[key] = v
+}
+func releaseAttempt(m map[string]loginWindow, key string, clearFailures bool) {
+	v := m[key]
+	if v.pending > 0 {
+		v.pending--
+	}
+	if clearFailures {
+		v.count = 0
+	}
+	if v.count == 0 && v.pending == 0 {
+		delete(m, key)
+	} else {
+		m[key] = v
+	}
+}
+func (l *rateLimiter) loginResult(email, ip string, failed, succeeded bool, now time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.prepare(now)
+	if failed {
+		addAttempt(l.accounts, hashToken(email), 4096, now)
+		addAttempt(l.ips, ip, 1024, now)
+	}
+	releaseAttempt(l.accounts, hashToken(email), succeeded)
+	releaseAttempt(l.ips, ip, false)
+}
+func (l *rateLimiter) allowRegistration(ip string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.prepare(now)
+	if !underLimit(l.registrations, ip, 20, 1024, now) {
+		return false
+	}
+	addAttempt(l.registrations, ip, 1024, now)
+	return true
+}
+
+// --- Optional email delivery after admin approval ---
+
+type resetSMTP struct {
+	Addr, Host, User, Password, From, PublicURL string
+	ImplicitTLS                                 bool
+}
+
+func loadResetSMTP() (resetSMTP, bool, error) {
+	cfg := resetSMTP{Addr: strings.TrimSpace(os.Getenv("NO_SLEEP_SMTP_ADDR")), User: os.Getenv("NO_SLEEP_SMTP_USER"), Password: os.Getenv("NO_SLEEP_SMTP_PASSWORD"), From: strings.TrimSpace(os.Getenv("NO_SLEEP_SMTP_FROM")), PublicURL: strings.TrimSpace(os.Getenv("NO_SLEEP_PUBLIC_URL"))}
+	if cfg.Addr == "" && cfg.User == "" && cfg.Password == "" && cfg.From == "" && cfg.PublicURL == "" {
+		return cfg, false, nil
+	}
+	invalid := errors.New("invalid password recovery email configuration")
+	host, port, err := net.SplitHostPort(cfg.Addr)
+	if err != nil || host == "" || strings.ContainsAny(cfg.Addr, "\r\n\t ") {
+		return cfg, false, invalid
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return cfg, false, invalid
+	}
+	cfg.Host = host
+	cfg.ImplicitTLS = n == 465
+	if !plainEmail(cfg.From) || (cfg.User == "") != (cfg.Password == "") {
+		return cfg, false, invalid
+	}
+	public, err := url.Parse(cfg.PublicURL)
+	if err != nil || public.Scheme != "https" || public.Host == "" || public.User != nil || public.RawQuery != "" || public.Fragment != "" || strings.ContainsAny(cfg.PublicURL, "\r\n") {
+		return cfg, false, invalid
+	}
+	return cfg, true, nil
+}
+
+func plainEmail(email string) bool {
+	parsed, err := mail.ParseAddress(email)
+	return err == nil && parsed.Address == email && !strings.ContainsAny(email, "\r\n") && len(email) <= 254
+}
+
+func resetMail(cfg resetSMTP, email string, code PasswordResetCode) (string, error) {
+	if !plainEmail(cfg.From) || !plainEmail(email) || len(code.ResetCode) != 64 {
+		return "", errors.New("invalid reset email")
+	}
+	public, err := url.Parse(cfg.PublicURL)
+	if err != nil || public.Scheme != "https" || public.Host == "" {
+		return "", errors.New("invalid recovery URL")
+	}
+	public.Fragment = "reset=" + code.ResetCode
+	return fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: NO SLEEP password recovery\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\nA password reset was requested for your NO SLEEP account.\r\n\r\nOpen this link to choose a new password:\r\n%s\r\n\r\nThis link expires at %s and works once. If you did not request this, ignore this email.\r\n", cfg.From, email, public.String(), code.ExpiresAt.Format(time.RFC3339)), nil
+}
+
+func sendResetMail(cfg resetSMTP, email string, code PasswordResetCode) error {
+	message, err := resetMail(cfg, email, code)
+	if err != nil {
+		return err
+	}
+	conn, err := net.DialTimeout("tcp", cfg.Addr, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		return err
+	}
+	tlsConfig := &tls.Config{ServerName: cfg.Host, MinVersion: tls.VersionTLS12}
+	if cfg.ImplicitTLS {
+		secured := tls.Client(conn, tlsConfig)
+		if err := secured.Handshake(); err != nil {
+			return err
+		}
+		conn = secured
+	}
+	client, err := smtp.NewClient(conn, cfg.Host)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	if !cfg.ImplicitTLS {
+		if ok, _ := client.Extension("STARTTLS"); !ok {
+			return errors.New("SMTP server must support TLS")
+		}
+		if err := client.StartTLS(tlsConfig); err != nil {
+			return err
+		}
+	}
+	if cfg.User != "" {
+		if err := client.Auth(smtp.PlainAuth("", cfg.User, cfg.Password, cfg.Host)); err != nil {
+			return err
+		}
+	}
+	if err := client.Mail(cfg.From); err != nil {
+		return err
+	}
+	if err := client.Rcpt(email); err != nil {
+		return err
+	}
+	data, err := client.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(data, message); err != nil {
+		data.Close()
+		return err
+	}
+	if err := data.Close(); err != nil {
+		return err
+	}
+	return client.Quit()
+}
+
+// Delivery uses an existing admin-approved code; it cannot create or rotate one.
+func (s *Store) deliverPasswordReset(cfg resetSMTP, code PasswordResetCode) {
+	var email string
+	err := s.db.QueryRow(`SELECT u.email FROM password_requests r JOIN users u ON u.id=r.user_id
+		WHERE r.token_hash=? AND r.status='issued' AND r.issued_by>0 AND r.expires_at>? AND u.active=1`, hashToken(code.ResetCode), stamp(s.now())).Scan(&email)
+	if err != nil {
+		return
+	}
+	if err := sendResetMail(cfg, email, code); err != nil {
+		log.Print("Password recovery email delivery failed; the admin can provide the approved code privately.")
+	}
 }
